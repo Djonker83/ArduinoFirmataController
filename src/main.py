@@ -243,21 +243,69 @@ class OptimizedSerialWorker(QThread):
             self.port = port
             self.board_type = board_type
             
+            # Check if port is available
+            available_ports = [p.device for p in serial.tools.list_ports.comports()]
+            if port not in available_ports:
+                self.connected.emit(False, f"Port {port} not found. Available ports: {', '.join(available_ports)}")
+                return False
+            
+            # Try to open the port first to check accessibility
+            test_serial = None
+            try:
+                test_serial = serial.Serial(port, 57600, timeout=2)
+                test_serial.close()
+            except serial.SerialException as e:
+                if "Permission denied" in str(e):
+                    self.connected.emit(False, f"Permission denied accessing {port}. Try running as administrator or check port permissions.")
+                    return False
+                elif "could not open port" in str(e).lower():
+                    self.connected.emit(False, f"Port {port} is in use by another application. Close Arduino IDE or other serial monitoring tools.")
+                    return False
+                else:
+                    self.connected.emit(False, f"Serial port error: {str(e)}")
+                    return False
+            
             # Create appropriate board instance
-            if board_type == 'mega' or board_type == 'arduino mega':
-                self.board = pyfirmata.ArduinoMega(port)
-            elif board_type == 'due' or board_type == 'arduino due':
-                self.board = pyfirmata.Arduino(port)  # Due uses same base class
-            elif board_type == 'esp32' or board_type == 'esp32 dev':
-                self.board = pyfirmata.Arduino(port)  # ESP32 uses same base class
-            elif board_type == 'esp8266' or board_type == 'nodeMCU':
-                self.board = pyfirmata.Arduino(port)  # ESP8266 uses same base class
-            else:
-                self.board = pyfirmata.Arduino(port)  # Default to Arduino
+            try:
+                if board_type == 'mega' or board_type == 'arduino mega':
+                    self.board = pyfirmata.ArduinoMega(port)
+                elif board_type == 'due' or board_type == 'arduino due':
+                    self.board = pyfirmata.Arduino(port)  # Due uses same base class
+                elif board_type == 'esp32' or board_type == 'esp32 dev':
+                    self.board = pyfirmata.Arduino(port)  # ESP32 uses same base class
+                elif board_type == 'esp8266' or board_type == 'nodeMCU':
+                    self.board = pyfirmata.Arduino(port)  # ESP8266 uses same base class
+                else:
+                    self.board = pyfirmata.Arduino(port)  # Default to Arduino
+            except Exception as e:
+                self.connected.emit(False, f"Error creating board instance: {str(e)}. Make sure Arduino is running StandardFirmata sketch.")
+                return False
             
             # Start iterator thread for analog inputs
-            self.iterator = pyfirmata.util.Iterator(self.board)
-            self.iterator.start()
+            try:
+                self.iterator = pyfirmata.util.Iterator(self.board)
+                self.iterator.start()
+                
+                # Wait a moment for the board to initialize
+                import time
+                time.sleep(0.5)
+                
+                # Test basic communication
+                if hasattr(self.board, 'get_firmware'):
+                    try:
+                        firmware = self.board.get_firmware()
+                        if not firmware:
+                            self.connected.emit(False, "No response from board. Make sure it's running StandardFirmata sketch.")
+                            self.disconnect()
+                            return False
+                    except:
+                        # Some boards might not support get_firmware, continue anyway
+                        pass
+                
+            except Exception as e:
+                self.connected.emit(False, f"Error initializing board communication: {str(e)}. The board might not be running StandardFirmata.")
+                self.disconnect()
+                return False
             
             self.running = True
             self.connected.emit(True, f"Connected to {port} as {board_type}")
@@ -506,6 +554,30 @@ class OptimizedArduinoApp(QMainWindow):
         
         right_layout.addWidget(monitor_group)
         
+        # Troubleshooting Guide
+        troubleshoot_group = QGroupBox("Troubleshooting Guide")
+        troubleshoot_layout = QVBoxLayout(troubleshoot_group)
+        
+        self.troubleshoot_text = QTextEdit()
+        self.troubleshoot_text.setReadOnly(True)
+        self.troubleshoot_text.setFont(QFont("Arial", 8))
+        self.troubleshoot_text.setMaximumHeight(150)
+        self.troubleshoot_text.setHtml("""
+        <b>Common Connection Issues:</b><br>
+        1. <b>Arduino not running StandardFirmata:</b> Upload StandardFirmata sketch from Arduino IDE<br>
+        2. <b>Port in use:</b> Close Arduino IDE and other serial monitors<br>
+        3. <b>Permission denied:</b> Try running as administrator (Windows) or check port permissions<br>
+        4. <b>Wrong board type:</b> Ensure board type matches your Arduino hardware<br>
+        5. <b>USB connection:</b> Try different cable or USB port
+        """)
+        troubleshoot_layout.addWidget(self.troubleshoot_text)
+        
+        more_info_btn = QPushButton("More Help")
+        more_info_btn.clicked.connect(self.show_troubleshooting_details)
+        troubleshoot_layout.addWidget(more_info_btn)
+        
+        right_layout.addWidget(troubleshoot_group)
+        
         # Log output
         log_group = QGroupBox("Communication Log")
         log_layout = QVBoxLayout(log_group)
@@ -545,13 +617,11 @@ class OptimizedArduinoApp(QMainWindow):
             digital_scroll_layout.addWidget(pin_widget)
         
         digital_scroll_layout.addStretch()
-        digital_layout.addWidget(digital_scroll)
         
         scroll_area = qt_widgets.QScrollArea()
         scroll_area.setWidget(digital_scroll)
         scroll_area.setWidgetResizable(True)
         
-        digital_layout = QVBoxLayout(digital_tab)
         digital_layout.addWidget(scroll_area)
         
         self.pin_tabs.addTab(digital_tab, "Digital Pins")
@@ -855,6 +925,94 @@ class OptimizedArduinoApp(QMainWindow):
     def log_message(self, message: str):
         """Add message to log"""
         self.log.append(f">>> {message}")
+    
+    def show_troubleshooting_details(self):
+        """Show detailed troubleshooting dialog"""
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Arduino Connection Troubleshooting")
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setStandardButtons(QMessageBox.Ok)
+        
+        details_html = """
+<h3>Arduino Connection Troubleshooting Guide</h3>
+
+<h4>1. Arduino Not Running StandardFirmata</h4>
+<p>The most common issue is that the Arduino isn't running the required StandardFirmata sketch.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Open Arduino IDE</li>
+<li>Go to File > Examples > Firmata > StandardFirmata</li>
+<li>Connect your Arduino</li>
+<li>Select the correct board and port from Tools > Board and Tools > Port</li>
+<li>Upload the sketch to your board</li>
+</ul>
+
+<h4>2. Port In Use Error</h4>
+<p>The serial port is being used by another application, typically the Arduino IDE.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Close Arduino IDE completely (it keeps the port open)</li>
+<li>Close any other serial monitoring tools</li>
+<li>Try connecting again</li>
+</ul>
+
+<h4>3. Permission Denied</h4>
+<p>The application doesn't have permission to access the serial port.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li><b>Windows:</b> Right-click the application and select "Run as administrator"</li>
+<li><b>Linux:</b> Add your user to the dialout group: <code>sudo usermod -a -G dialout $USER</code> then logout and login again</li>
+<li><b>macOS:</b> Try running with sudo: <code>sudo python src/main.py</code></li>
+</ul>
+
+<h4>4. Incorrect Board Type</h4>
+<p>The board type selected in the application doesn't match your actual Arduino hardware.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Verify your Arduino model (Uno, Mega, Due, ESP32, etc.)</li>
+<li>Select the matching board type in the application's dropdown</li>
+<li>If unsure, try "Auto-detect" first</li>
+</ul>
+
+<h4>5. USB Connection Issues</h4>
+<p>Physical connection problems or driver issues.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Try a different USB cable (some cables only provide power)</li>
+<li>Try a different USB port on your computer</li>
+<li>If using a clone Arduino, ensure you have the correct drivers (CH340, CP210, FTDI)</li>
+<li>Check if the Arduino's power LED is on</li>
+</ul>
+
+<h4>6. Port Detection Issues</h4>
+<p>The application might not be detecting your Arduino port correctly.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Click the "Refresh" button in the application</li>
+<li>Check if your Arduino appears in the port list with "[LIKELY ARDUINO]" tag</li>
+<li>If not detected, check Device Manager (Windows) or ls /dev/tty* (Linux/macOS)</li>
+</ul>
+
+<h4>7. pyfirmata Compatibility Issues</h4>
+<p>Different versions of pyfirmata might have compatibility issues with certain Arduino boards.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>Try updating pyfirmata: <code>pip install --upgrade pyfirmata</code></li>
+<li>If issues persist, try a specific version: <code>pip install pyfirmata==2.0.0</code></li>
+</ul>
+
+<h4>8. Baud Rate Issues</h4>
+<p>The Arduino's Firmata sketch might be configured for a different baud rate.</p>
+<p><b>Solution:</b></p>
+<ul>
+<li>The default baud rate for StandardFirmata is 57600</li>
+<li>If you modified the sketch, ensure it matches the application's expectations</li>
+</ul>
+"""
+        
+        dialog.setText("If you're still having issues after trying these solutions, check the log window for specific error messages.")
+        dialog.setDetailedText(details_html)
+        dialog.exec()
     
     def closeEvent(self, event):
         """Clean up on window close"""

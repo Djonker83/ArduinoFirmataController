@@ -1,0 +1,13 @@
+# Required dependencies for Arduino Firmata Controller
+pyserial>=3.5
+pyfirmata>=2.0
+PyQt6>=6.0.0
+
+# Optional: For PyQt5 compatibility
+# PyQt5>=5.15.0
+
+# Development dependencies (optional)
+# pytest>=6.0.0
+# pytest-qt>=4.0.0
+# black>=21.0.0
+# flake8>=3.8.0

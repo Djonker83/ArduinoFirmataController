@@ -267,6 +267,22 @@ class OptimizedSerialWorker(QThread):
             
             # Create appropriate board instance
             try:
+                # Monkey patch to fix inspect.getargspec issue with newer Python versions
+                import inspect
+                if not hasattr(inspect, 'getargspec'):
+                    import types
+                    def getargspec(func):
+                        if isinstance(func, types.MethodType):
+                            func = func.__func__
+                        args = inspect.getfullargspec(func)
+                        return inspect.ArgSpec(
+                            args=args.args,
+                            varargs=args.varargs,
+                            keywords=args.varkw,
+                            defaults=args.defaults
+                        )
+                    inspect.getargspec = getargspec
+                
                 if board_type == 'mega' or board_type == 'arduino mega':
                     self.board = pyfirmata.ArduinoMega(port)
                 elif board_type == 'due' or board_type == 'arduino due':
@@ -278,7 +294,11 @@ class OptimizedSerialWorker(QThread):
                 else:
                     self.board = pyfirmata.Arduino(port)  # Default to Arduino
             except Exception as e:
-                self.connected.emit(False, f"Error creating board instance: {str(e)}. Make sure Arduino is running StandardFirmata sketch.")
+                error_msg = str(e)
+                if "getargspec" in error_msg:
+                    self.connected.emit(False, f"Python compatibility issue with pyfirmata library. This is a known issue with newer Python versions. Try updating pyfirmata: pip install --upgrade pyfirmata")
+                else:
+                    self.connected.emit(False, f"Error creating board instance: {error_msg}. Make sure Arduino is running StandardFirmata or ConfigurableFirmata sketch.")
                 return False
             
             # Start iterator thread for analog inputs

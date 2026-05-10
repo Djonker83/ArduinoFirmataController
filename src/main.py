@@ -249,23 +249,31 @@ class OptimizedSerialWorker(QThread):
                 self.connected.emit(False, f"Port {port} not found. Available ports: {', '.join(available_ports)}")
                 return False
             
-            # Try to open the port first to check accessibility
+            # Try to open the port first to check accessibility with multiple baud rates
             test_serial = None
-            try:
-                test_serial = serial.Serial(port, 57600, timeout=2)
-                test_serial.close()
-            except serial.SerialException as e:
-                if "Permission denied" in str(e):
-                    self.connected.emit(False, f"Permission denied accessing {port}. Try running as administrator or check port permissions.")
-                    return False
-                elif "could not open port" in str(e).lower():
-                    self.connected.emit(False, f"Port {port} is in use by another application. Close Arduino IDE or other serial monitoring tools.")
-                    return False
-                else:
-                    self.connected.emit(False, f"Serial port error: {str(e)}")
-                    return False
+            baud_rates = [57600, 115200, 9600]  # Try multiple common baud rates
+            port_accessible = False
             
-            # Create appropriate board instance
+            for baud in baud_rates:
+                try:
+                    test_serial = serial.Serial(port, baud, timeout=2)
+                    test_serial.close()
+                    port_accessible = True
+                    break
+                except serial.SerialException as e:
+                    if "Permission denied" in str(e):
+                        self.connected.emit(False, f"Permission denied accessing {port}. Try running as administrator or check port permissions.")
+                        return False
+                    elif "could not open port" in str(e).lower():
+                        self.connected.emit(False, f"Port {port} is in use by another application. Close Arduino IDE or other serial monitoring tools.")
+                        return False
+                    # Try next baud rate
+            
+            if not port_accessible:
+                self.connected.emit(False, f"Could not communicate with Arduino on {port}. Check cable and ensure Arduino is powered.")
+                return False
+            
+            # Create appropriate board instance with the right baud rate
             try:
                 # Monkey patch to fix inspect.getargspec issue with newer Python versions
                 import inspect
@@ -283,10 +291,12 @@ class OptimizedSerialWorker(QThread):
                         )
                     inspect.getargspec = getargspec
                 
-                if board_type == 'mega' or board_type == 'arduino mega':
+                # Arduino Due specifically needs a direct connection approach
+                if board_type == 'due' or board_type == 'arduino due':
+                    # Try with explicit baud rate for Due
+                    self.board = pyfirmata.Arduino(port, baudrate=115200)  # Due often uses 115200 by default
+                elif board_type == 'mega' or board_type == 'arduino mega':
                     self.board = pyfirmata.ArduinoMega(port)
-                elif board_type == 'due' or board_type == 'arduino due':
-                    self.board = pyfirmata.Arduino(port)  # Due uses same base class
                 elif board_type == 'esp32' or board_type == 'esp32 dev':
                     self.board = pyfirmata.Arduino(port)  # ESP32 uses same base class
                 elif board_type == 'esp8266' or board_type == 'nodeMCU':
